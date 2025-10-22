@@ -2,17 +2,14 @@ import time
 import socket
 import json
 import statistics
-import numpy as np # A biblioteca usa numpy para a média, então precisamos dele
-
-# Importa as classes necessárias
+import numpy as np 
 from max30102 import MAX30102
 import hrcalc
 
 # --- Configurações ---
 HOST = '127.0.0.1'
 PORT = 65433
-AMOSTRAS_PARA_COLETAR = 100 # Reduzi um pouco para um feedback mais rápido
-# Filtros para o resultado final da mediana
+AMOSTRAS_PARA_COLETAR = 100 
 BPM_MIN_VALIDO = 40
 BPM_MAX_VALIDO = 200
 SPO2_MIN_VALIDO = 85
@@ -23,13 +20,16 @@ leituras_bpm = []
 leituras_spo2 = []
 
 def processar_e_enviar_dados(conn):
-    """Filtra, calcula medianas e envia o JSON. (Função sem alterações)"""
+    """
+    Filtra, calcula medianas e envia o JSON.
+    Retorna True se enviou, False se descartou o lote.
+    """
     global leituras_bpm, leituras_spo2
     print("\nProcessando lote de amostras...")
     bpm_validos = [b for b in leituras_bpm if BPM_MIN_VALIDO <= b <= BPM_MAX_VALIDO]
     spo2_validos = [s for s in leituras_spo2 if SPO2_MIN_VALIDO <= s <= SPO2_MAX_VALIDO]
-    print(f"   Leituras de BPM válidas ({len(bpm_validos)}/{len(leituras_bpm)}): {bpm_validos}")
-    print(f"   Leituras de SpO2 válidas ({len(spo2_validos)}/{len(leituras_spo2)}): {spo2_validos}")
+    print(f"    Leituras de BPM válidas ({len(bpm_validos)}/{len(leituras_bpm)}): {bpm_validos}")
+    print(f"    Leituras de SpO2 válidas ({len(spo2_validos)}/{len(leituras_spo2)}): {spo2_validos}")
     bpm_final = round(statistics.median(bpm_validos)) if bpm_validos else None
     spo2_final = round(statistics.median(spo2_validos)) if spo2_validos else None
     
@@ -41,9 +41,11 @@ def processar_e_enviar_dados(conn):
         data_json = {"bpm": bpm_final, "spo2": spo2_final}
         mensagem_json = json.dumps(data_json).encode('utf-8')
         conn.sendall(mensagem_json)
-        print(f"JSON enviado para o cliente: {mensagem_json.decode('utf-8')}\n")
+        print(f" JSON enviado para o cliente: {mensagem_json.decode('utf-8')}")
+        return True # <-- MUDANÇA 1: Retorna True em caso de sucesso
     else:
         print(" Lote descartado, poucos dados válidos. Continue com o dedo no sensor.\n")
+        return False # <-- MUDANÇA 2: Retorna False em caso de falha
 
 def main():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -102,11 +104,18 @@ def main():
                                 if valid_bpm and valid_spo2:
                                     leituras_bpm.append(bpm)
                                     leituras_spo2.append(spo2)
-                                    print(f"   Leitura válida... BPM={int(bpm)}, SpO2={int(spo2)}  (Amostras: {len(leituras_bpm)}/{AMOSTRAS_PARA_COLETAR})")
+                                    print(f"    Leitura válida... BPM={int(bpm)}, SpO2={int(spo2)}  (Amostras: {len(leituras_bpm)}/{AMOSTRAS_PARA_COLETAR})")
                                     
                                     # 7. Se coletamos amostras suficientes, processa o lote e envia
                                     if len(leituras_bpm) >= AMOSTRAS_PARA_COLETAR:
-                                        processar_e_enviar_dados(conn)
+                                        # --- MUDANÇA 3: Verifica o retorno da função ---
+                                        sucesso_envio = processar_e_enviar_dados(conn)
+                                        
+                                        if sucesso_envio:
+                                            print(f"🔌 Desconectando cliente {addr}...\n")
+                                            break # <-- Sai do loop 'while True' interno
+                                        # Se sucesso_envio for False, o loop continua
+                                        # para tentar coletar um novo lote de 100 amostras.
 
                         # Pequena pausa para não sobrecarregar a CPU
                         time.sleep(0.01)
@@ -115,6 +124,7 @@ def main():
                     print(f" Cliente {addr} desconectou.")
                 except KeyboardInterrupt:
                     print("\nPrograma encerrado pelo usuário.")
+                    sensor.shutdown() # Garante que o sensor desliga no Ctrl+C
                     break
                 finally:
                     # Desliga o sensor para apagar os LEDs
